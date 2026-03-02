@@ -3,8 +3,8 @@
 """查看 MIDI 文件信息"""
 
 import mido
-
-input_file = r"D:\code\music\jnsz_pattern江南丝竹\中花六板.mid"
+import sys
+input_file = sys.argv[1] if len(sys.argv) > 1 else r"D:\code\music\jnsz_pattern江南丝竹\中花六板_fix.mid"
 
 mid = mido.MidiFile(input_file)
 
@@ -49,7 +49,7 @@ print("Part 2 (first 4 beats / bar 1) notes:")
 
 track1 = mid.tracks[1]  # 第二声部
 ticks_per_beat = mid.ticks_per_beat
-four_beats = 4 * ticks_per_beat  # 前四拍
+four_beats = 12 * ticks_per_beat  # 前四拍
 
 current_time = 0
 notes_on = {}  # 记录当前正在播放的音符

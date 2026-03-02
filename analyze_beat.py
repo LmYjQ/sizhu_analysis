@@ -501,7 +501,7 @@ def generate_annotated_musicxml(mid_file_path, track_index, key, output_path=Non
 
 def main():
     # 配置
-    mid_file = r"D:\code\music\jnsz_pattern江南丝竹\中花六板.mid"
+    mid_file = r"D:\code\music\jnsz_pattern江南丝竹\中花六板_fix.mid"
 
     # 指定要分析的声部索引 (从 0 开始)
     # 0 = 第一个声部, 1 = 第二个声部, 以此类推
