@@ -43,20 +43,31 @@ def analyze_beat_contents(mid_file_path, track_index=0):
     # 拍内偏移是该音符相对于该拍开始位置的 tick 数
     beat_contents = defaultdict(list)
 
-    # 当前累计的 tick 数
+    # 第一步：收集所有音符的开始和结束时间
+    note_on_times = {}  # note -> start_tick
+
     current_tick = 0
-
     for msg in track:
-        # 累加时间
         current_tick += msg.time
-
-        # 计算当前是多少拍及拍内偏移
-        current_beat = current_tick // ticks_per_beat
-        beat_offset = current_tick % ticks_per_beat
-
         if msg.type == 'note_on' and msg.velocity > 0:
-            # 记录音符及其在拍内的位置
-            beat_contents[current_beat].append((msg.note, beat_offset))
+            note_on_times[msg.note] = current_tick
+        elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+            if msg.note in note_on_times:
+                start_tick = note_on_times.pop(msg.note)
+                duration = current_tick - start_tick
+
+                # 找出音符跨越的所有拍
+                start_beat = start_tick // ticks_per_beat
+                end_beat = (start_tick + duration - 1) // ticks_per_beat  # -1 确保音符结束时不算入下一拍
+
+                for beat in range(start_beat, end_beat + 1):
+                    # 计算该音符在此拍中的偏移
+                    if beat == start_beat:
+                        beat_offset = start_tick % ticks_per_beat
+                    else:
+                        beat_offset = 0  # 音符在该拍开始时就响着
+
+                    beat_contents[beat].append((msg.note, beat_offset))
 
     return beat_contents, ticks_per_beat
 
