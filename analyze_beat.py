@@ -448,9 +448,12 @@ def notes_to_fanqie_notation(notes_list, ticks_per_beat, key="C"):
     return "".join(result_parts)
 
 
-def generate_fanqie_jianpu(beat_contents, ticks_per_beat, key="C", total_beats=None, tempo=120):
+def generate_statistic(beat_contents, ticks_per_beat, key="C", total_beats=None, tempo=120, beats_in_measure=4):
     """
     生成番茄简谱格式的输出
+
+    Q行：每个小节两拍，第一拍是模式（实际音符内容），第二拍是空拍用于凑时长
+    C行：出现{i}次，出现位置[第k1小节第i1拍，第k2小节第i2拍]
 
     参数:
         beat_contents: analyze_beat_contents 返回的每拍内容
@@ -472,21 +475,6 @@ def generate_fanqie_jianpu(beat_contents, ticks_per_beat, key="C", total_beats=N
     # 统计模式出现
     pattern_info = find_pattern_occurrences(beat_contents, ticks_per_beat, key, total_beats)
 
-    # 按出现次数排序，每个模式分配一个唯一编号
-    sorted_patterns = sorted(pattern_info.items(), key=lambda x: -x[1]["count"])
-
-    # 为每个模式创建一个简谱音符表示
-    # 频率高的模式用简单的数字，频率低的用复杂表示
-    # 这里我们直接用频率作为音符值
-    pattern_to_jianpu = {}
-    for pattern_str, data in sorted_patterns:
-        freq = data["count"]
-        pattern_to_jianpu[pattern_str] = freq_to_fanqie_jianpu(freq)
-
-    # 2/4拍：每小节2拍
-    beats_in_measure = 2
-    num_measures = (max_beat + beats_in_measure - 1) // beats_in_measure
-
     # 构建输出
     lines = []
 
@@ -495,33 +483,47 @@ def generate_fanqie_jianpu(beat_contents, ticks_per_beat, key="C", total_beats=N
     lines.append(f"P: 2/4")
     lines.append(f"J: {tempo}")
 
-    # 遍历每个小节
-    for measure_idx in range(num_measures):
-        # 小节的第一拍（偶数拍号，0-indexed）
-        beat1 = measure_idx * 2
-        # 小节的第二拍
-        beat2 = beat1 + 1
+    # 转换位置格式函数（beat -> 第X小节第Y拍，数字用~分隔）
+    def beat_to_str(beat):
+        measure = beat // beats_in_measure + 1  # 小节号从1开始
+        beat_in_measure = beat % beats_in_measure + 1  # 拍号从1开始
+        # 用~分隔数字的每一位
+        measure_str = '~'.join(str(measure))
+        beat_str = '~'.join(str(beat_in_measure))
+        return f"{measure_str}bar{beat_str}beat"
 
-        # 获取两个拍的音符内容（用于计算时值）
-        notes1 = beat_contents.get(beat1, [])
-        notes2 = beat_contents.get(beat2, [])
+    # 分页间隔（每n组插入分页标记）
+    fenye_interval = 15
+    group_count = 0  # 组计数器
 
-        # 转换为模式字符串（用于查找频率）
-        pattern1 = beat_to_pattern(notes1, ticks_per_beat, key)
-        pattern2 = beat_to_pattern(notes2, ticks_per_beat, key)
+    # 按出现频率从高到低排序
+    sorted_patterns = sorted(pattern_info.items(), key=lambda x: x[1]["count"], reverse=True)
 
-        # 转换为番茄简谱音符（带时值）
-        note1_str = notes_to_fanqie_notation(notes1, ticks_per_beat, key)
-        note2_str = notes_to_fanqie_notation(notes2, ticks_per_beat, key)
+    # 按模式频率排序输出，相同模式只输出一次
+    for idx, (pattern_str, info) in enumerate(sorted_patterns):
+        count = info["count"]
+        positions = info["positions"]
 
-        # 获取频率（模式出现次数）
-        freq1 = pattern_info.get(pattern1, {}).get("count", 0)
-        freq2 = pattern_info.get(pattern2, {}).get("count", 0)
+        # 取该模式的第一个位置作为音符内容
+        first_beat = positions[0]
+        notes = beat_contents.get(first_beat, [])
+        note_str = notes_to_fanqie_notation(notes, ticks_per_beat, key)
 
-        # Q行：实际音符（带时值）
-        q_line = f"Q: {note1_str} {note2_str}"
+        lines.append(f"Q: {note_str}"+ '0 '*5)
+        lines.append(f"C: 出现{count}次")
 
-        lines.append(q_line)
+        # 每个位置单独一行
+        for p in positions:
+            pos_str = beat_to_str(p)
+            lines.append(f"C: {pos_str}")
+
+            # 每隔fenye_interval组插入分页标记（一组=1行Q + 1行C出现次数 + N行C位置）
+            group_count += 1
+
+        if group_count >= fenye_interval:
+            lines.append("[fenye]")
+            print(f"{idx} reset")
+            group_count = 0  # 重置计数器
 
     return lines
 
@@ -766,10 +768,13 @@ def main():
     generate_original = True  # 修改这里！设为 True 生成原谱
 
     # 是否生成番茄简谱文件（频率统计）
-    generate_fanqie = False  # 修改这里！设为 True 生成番茄简谱
+    generate_fanqie = True  # 修改这里！设为 True 生成番茄简谱
 
     # 是否生成带重复标注的 MusicXML 文件
     generate_musicxml = False  # 修改这里！设为 True 生成 XML
+
+    # 每小节拍数（用于统计位置显示）
+    beats_in_measure = 4  # 修改这里！如 2/4 拍设为 2，4/4 拍设为 4
 
     print(f"输入文件: {mid_file}")
     print(f"分析声部索引: {track_index}")
@@ -791,7 +796,7 @@ def main():
     beat_contents, ticks_per_beat = result
 
     # 打印详细统计
-    print_beat_statistics(beat_contents, ticks_per_beat, key)
+    # print_beat_statistics(beat_contents, ticks_per_beat, key)
 
     # 计算总拍数
     mid = mido.MidiFile(mid_file)
@@ -816,14 +821,14 @@ def main():
     # 生成番茄简谱文件
     if generate_fanqie:
         print("\n正在生成番茄简谱...")
-        fanqie_lines = generate_fanqie_jianpu(beat_contents, ticks_per_beat, key, total_beats)
+        fanqie_lines = generate_statistic(beat_contents, ticks_per_beat, key, total_beats, beats_in_measure=beats_in_measure)
 
         # 保存到文件
         base = os.path.splitext(mid_file)[0]
-        output_path = f"{base}_番茄简谱.txt"
+        output_path = f"{base}_统计.txt"
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(fanqie_lines))
-        print(f"已生成番茄简谱文件: {output_path}")
+        print(f"已生成统计文件: {output_path}")
 
     # 生成带重复标注的 MusicXML 文件
     if generate_musicxml:
