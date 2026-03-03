@@ -80,22 +80,6 @@ def format_note_name(note_num):
     return f"{note_name}{octave}"
 
 
-def get_jianpu_dots():
-    """根据系统判断使用哪种高低音点字符"""
-    import platform
-    system = platform.system()
-    if system == "Windows":
-        # Windows 控制台用 ASCII 字符
-        return ('^', '_')  # (高音点, 低音点)
-    else:
-        # 其他系统用 Unicode 字符
-        return ('̇', '̳')
-
-
-# 全局变量存储高低音点字符
-_JIANPU_DOTS = get_jianpu_dots()
-
-
 def midi_to_jianpu(note_num, key="C"):
     """
     将 MIDI 音符编号转换为简谱音名
@@ -106,6 +90,7 @@ def midi_to_jianpu(note_num, key="C"):
 
     返回:
         简谱音名，如 "1", "1^"(高音点), "5_"(低音点), "#4", "b7" 等
+        高八度用 ' 表示，如 1' ；低八度用 , 表示，如 1,
     """
     # 调的主音 MIDI 编号 (该音 = 简谱 1)
     # C=60, G=67, D=74, A=81, E=88, B=95
@@ -141,16 +126,15 @@ def midi_to_jianpu(note_num, key="C"):
     # 计算八度 (相对于调的主音)
     octave_offset = interval // 12
 
-    # 添加高低音点
-    high_dot, low_dot = _JIANPU_DOTS
+    # 添加高低八度标记
     if octave_offset > 0:
-        dots = high_dot * min(octave_offset, 2)  # 最多两个点
+        oct_mark = "'" * min(octave_offset, 2)  # 最多两个 '
     elif octave_offset < 0:
-        dots = low_dot * min(-octave_offset, 2)
+        oct_mark = "," * min(-octave_offset, 2)  # 最多两个 ,
     else:
-        dots = ''
+        oct_mark = ''
 
-    return f"{base_note}{dots}"
+    return f"{base_note}{oct_mark}"
 
 
 def print_beat_statistics(beat_contents, ticks_per_beat, key="C"):
@@ -332,6 +316,274 @@ def find_pattern_occurrences(beat_contents, ticks_per_beat, key="C", total_beats
     return pattern_info
 
 
+def freq_to_fanqie_jianpu(freq):
+    """
+    将频率数字转换为番茄简谱格式
+
+    参数:
+        freq: 出现次数
+
+    返回:
+        番茄简谱格式字符串，如 "3", "3-", "3/", "3//"
+    """
+    if freq <= 0:
+        return "0"
+
+    if freq == 1:
+        return str(freq)
+    elif freq == 2:
+        return f"{freq}-"  # 增时线，两拍
+    elif freq == 3:
+        return f"{freq}//"  # 3的十六分音符=0.75拍，不合适
+    # 频率大于4时，用数字+减时线表示
+    # 比如 5/ 表示 5作为八分音符（0.5拍），这样一小节约1.5拍接近2拍
+    # 但2/4拍一小节正好2拍，所以需要调整
+    # 方案：频率>2时都用 数字- 表示两拍（频率本身作为音符）
+    else:
+        return f"{freq}-"  # 频率本身作为音符，加增时线凑成两拍
+
+
+
+def duration_to_fanqie_mark(duration_ratio):
+    """
+    将持续时间比例转换为番茄简谱时值标记
+
+    时值规则：
+    - 整拍(1): 无标记
+    - 半拍(1/2): /
+    - 1/4拍: //
+    - 1/8拍: ///
+    - 1.5拍(1+1/2): . (增加前面时间的一半，即1*1.5=1.5)
+    - 3/4拍(1/2+1/4): /. (半拍加四分之一拍)
+
+    参数:
+        duration_ratio: 持续时间占一拍的比例
+
+    返回:
+        时值标记字符串
+    """
+    if duration_ratio <= 0:
+        return ""
+
+    # 精确值到近似值的映射
+    # key: 持续时间比例, value: 时值标记
+    exact_values = {
+        1.0: "",      # 整拍
+        0.5: "/",     # 半拍
+        0.25: "//",   # 1/4拍
+        0.125: "///",  # 1/8拍
+        1.5: ".",     # 1.5拍 = 1 + 1/2
+        0.75: "/.",   # 3/4拍 = 1/2 + 1/4
+        0.375: "//.", # 3/8拍 = 1/4 + 1/8
+        0.625: "/..", # 5/8拍 = 1/2 + 1/8
+    }
+
+    # 找最接近的值（允许10%误差）
+    tolerance = 0.1
+    for key, value in exact_values.items():
+        if abs(duration_ratio - key) < tolerance:
+            return value
+
+    # 没有匹配到，返回空字符串（整拍）
+    return ""
+
+
+def notes_to_fanqie_notation(notes_list, ticks_per_beat, key="C"):
+    """
+    将拍内音符列表转换为番茄简谱音符字符串
+
+    根据拍内位置计算每个音符的时值：
+    - 整拍(1): 无标记
+    - 半拍(1/2): /
+    - 1/4拍: //
+    - 1.5拍(1+1/2): 1.
+    - 3/4拍(1/2+1/4): 1/.
+
+    参数:
+        notes_list: [(音符, 拍内偏移), ...] 列表
+        ticks_per_beat: 每拍的 tick 数
+        key: 调性
+
+    返回:
+        番茄简谱音符字符串，如 "5/5/6/5/"
+    """
+    if not notes_list:
+        return "0"
+
+    # 按位置排序
+    sorted_notes = sorted(notes_list, key=lambda x: x[1])
+
+    # 检查第一个音符是否有偏移（即拍子开始是否有休止符）
+    result_parts = []
+    first_note_offset = sorted_notes[0][1]
+
+    if first_note_offset > 0:
+        # 拍子开始有休止符，添加休止符
+        rest_duration_ratio = first_note_offset / ticks_per_beat
+        rest_time_mark = duration_to_fanqie_mark(rest_duration_ratio)
+        result_parts.append(f"0{rest_time_mark}")
+
+    # 计算每个音符的时值
+    n = len(sorted_notes)
+
+    for i, (note, offset) in enumerate(sorted_notes):
+        # 获取该音符的简谱表示
+        jianpu = midi_to_jianpu(note, key)
+
+        # 计算下一个音符的位置
+        if i < n - 1:
+            next_offset = sorted_notes[i + 1][1]
+        else:
+            next_offset = ticks_per_beat  # 到拍末
+
+        # 计算持续时间占拍的比例
+        duration = next_offset - offset
+        duration_ratio = duration / ticks_per_beat
+
+        # 转换为时值标记
+        time_mark = duration_to_fanqie_mark(duration_ratio)
+
+        result_parts.append(f"{jianpu}{time_mark}")
+
+    return "".join(result_parts)
+
+
+def generate_fanqie_jianpu(beat_contents, ticks_per_beat, key="C", total_beats=None, tempo=120):
+    """
+    生成番茄简谱格式的输出
+
+    参数:
+        beat_contents: analyze_beat_contents 返回的每拍内容
+        ticks_per_beat: 每拍的 tick 数
+        key: 调性
+        total_beats: 总拍数
+        tempo: 速度（BPM）
+
+    返回:
+        番茄简谱格式的字符串列表
+    """
+    # 获取总拍数
+    if total_beats is not None:
+        max_beat = total_beats
+    else:
+        sorted_beats = sorted(beat_contents.keys())
+        max_beat = max(sorted_beats) + 1
+
+    # 统计模式出现
+    pattern_info = find_pattern_occurrences(beat_contents, ticks_per_beat, key, total_beats)
+
+    # 按出现次数排序，每个模式分配一个唯一编号
+    sorted_patterns = sorted(pattern_info.items(), key=lambda x: -x[1]["count"])
+
+    # 为每个模式创建一个简谱音符表示
+    # 频率高的模式用简单的数字，频率低的用复杂表示
+    # 这里我们直接用频率作为音符值
+    pattern_to_jianpu = {}
+    for pattern_str, data in sorted_patterns:
+        freq = data["count"]
+        pattern_to_jianpu[pattern_str] = freq_to_fanqie_jianpu(freq)
+
+    # 2/4拍：每小节2拍
+    beats_in_measure = 2
+    num_measures = (max_beat + beats_in_measure - 1) // beats_in_measure
+
+    # 构建输出
+    lines = []
+
+    # 文件头
+    lines.append(f"D: {key}")
+    lines.append(f"P: 2/4")
+    lines.append(f"J: {tempo}")
+
+    # 遍历每个小节
+    for measure_idx in range(num_measures):
+        # 小节的第一拍（偶数拍号，0-indexed）
+        beat1 = measure_idx * 2
+        # 小节的第二拍
+        beat2 = beat1 + 1
+
+        # 获取两个拍的音符内容（用于计算时值）
+        notes1 = beat_contents.get(beat1, [])
+        notes2 = beat_contents.get(beat2, [])
+
+        # 转换为模式字符串（用于查找频率）
+        pattern1 = beat_to_pattern(notes1, ticks_per_beat, key)
+        pattern2 = beat_to_pattern(notes2, ticks_per_beat, key)
+
+        # 转换为番茄简谱音符（带时值）
+        note1_str = notes_to_fanqie_notation(notes1, ticks_per_beat, key)
+        note2_str = notes_to_fanqie_notation(notes2, ticks_per_beat, key)
+
+        # 获取频率（模式出现次数）
+        freq1 = pattern_info.get(pattern1, {}).get("count", 0)
+        freq2 = pattern_info.get(pattern2, {}).get("count", 0)
+
+        # Q行：实际音符（带时值）
+        q_line = f"Q: {note1_str} {note2_str}"
+
+        lines.append(q_line)
+
+    return lines
+
+
+def generate_original_jianpu(beat_contents, ticks_per_beat, key="C", total_beats=None, tempo=120):
+    """
+    生成原谱格式的输出（实际音符内容）
+
+    参数:
+        beat_contents: analyze_beat_contents 返回的每拍内容
+        ticks_per_beat: 每拍的 tick 数
+        key: 调性
+        total_beats: 总拍数
+        tempo: 速度（BPM）
+
+    返回:
+        原谱格式的字符串列表
+    """
+    # 获取总拍数
+    if total_beats is not None:
+        max_beat = total_beats
+    else:
+        sorted_beats = sorted(beat_contents.keys())
+        max_beat = max(sorted_beats) + 1
+
+    # 2/4拍：每小节2拍
+    beats_in_measure = 2
+    num_measures = (max_beat + beats_in_measure - 1) // beats_in_measure
+
+    # 构建输出
+    lines = []
+
+    # 文件头
+    lines.append(f"D: {key}")
+    lines.append(f"P: 2/4")
+    lines.append(f"J: {tempo}")
+
+    # 每两个小节为一行
+    measures_per_line = 2
+
+    # 重新组织输出：每行两个小节
+    output_lines = []
+    for i in range(0, num_measures, measures_per_line):
+        # 收集这一行的所有拍
+        line_parts = []
+        for m in range(measures_per_line):
+            if i + m < num_measures:
+                measure_idx = i + m
+                beat1 = measure_idx * 2
+                beat2 = beat1 + 1
+                notes1 = beat_contents.get(beat1, [])
+                notes2 = beat_contents.get(beat2, [])
+
+                note1_str = notes_to_fanqie_notation(notes1, ticks_per_beat, key)
+                note2_str = notes_to_fanqie_notation(notes2, ticks_per_beat, key)
+                line_parts.append(f"{note1_str} {note2_str}")
+
+        output_lines.append("Q: " + " ".join(line_parts))
+
+    return output_lines
+
+
 def generate_annotated_musicxml(mid_file_path, track_index, key, output_path=None):
     """
     生成带有重复片段标注的 MusicXML 文件
@@ -510,8 +762,14 @@ def main():
     # 指定调性 (简谱输出用)
     key = "D"  # 修改这里！如 "C", "G", "D", "F" 等
 
+    # 是否生成原谱文件（实际音符内容）
+    generate_original = True  # 修改这里！设为 True 生成原谱
+
+    # 是否生成番茄简谱文件（频率统计）
+    generate_fanqie = False  # 修改这里！设为 True 生成番茄简谱
+
     # 是否生成带重复标注的 MusicXML 文件
-    generate_musicxml = True  # 修改这里！设为 True 生成 XML
+    generate_musicxml = False  # 修改这里！设为 True 生成 XML
 
     print(f"输入文件: {mid_file}")
     print(f"分析声部索引: {track_index}")
@@ -534,6 +792,38 @@ def main():
 
     # 打印详细统计
     print_beat_statistics(beat_contents, ticks_per_beat, key)
+
+    # 计算总拍数
+    mid = mido.MidiFile(mid_file)
+    track = mid.tracks[track_index]
+    total_ticks = 0
+    for msg in track:
+        total_ticks += msg.time
+    total_beats = total_ticks // ticks_per_beat + 1
+
+    # 生成原谱文件
+    if generate_original:
+        print("\n正在生成原谱...")
+        original_lines = generate_original_jianpu(beat_contents, ticks_per_beat, key, total_beats)
+
+        # 保存到文件
+        base = os.path.splitext(mid_file)[0]
+        output_path = f"{base}_原谱.txt"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(original_lines))
+        print(f"已生成原谱文件: {output_path}")
+
+    # 生成番茄简谱文件
+    if generate_fanqie:
+        print("\n正在生成番茄简谱...")
+        fanqie_lines = generate_fanqie_jianpu(beat_contents, ticks_per_beat, key, total_beats)
+
+        # 保存到文件
+        base = os.path.splitext(mid_file)[0]
+        output_path = f"{base}_番茄简谱.txt"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(fanqie_lines))
+        print(f"已生成番茄简谱文件: {output_path}")
 
     # 生成带重复标注的 MusicXML 文件
     if generate_musicxml:
