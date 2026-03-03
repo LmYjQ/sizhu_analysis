@@ -496,11 +496,24 @@ def generate_statistic(beat_contents, ticks_per_beat, key="C", total_beats=None,
     fenye_interval = 15
     group_count = 0  # 组计数器
 
-    # 按出现频率从高到低排序
-    sorted_patterns = sorted(pattern_info.items(), key=lambda x: x[1]["count"], reverse=True)
+    # 排序：先按第一个音排序，再按出现频率倒序
+    def sort_key(item):
+        pattern_str, info = item
+        # 解析模式的第一个音
+        if pattern_str == "0":
+            first_note = 0  # 空拍排在最前面
+        else:
+            # 模式格式如 "1[0]5[37]6[50]1'[75]"，取第一个音
+            first_note_str = pattern_str.split('[')[0].replace("'", "")
+            # 尝试转换为数字
+            note_map = {'1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7}
+            first_note = note_map.get(first_note_str, 0)
+        return (first_note, -info["count"])  # 第一个音升序，频率降序
+
+    sorted_patterns = sorted(pattern_info.items(), key=sort_key)
 
     # 按模式频率排序输出，相同模式只输出一次
-    for idx, (pattern_str, info) in enumerate(sorted_patterns):
+    for _, info in sorted_patterns:
         count = info["count"]
         positions = info["positions"]
 
@@ -509,8 +522,15 @@ def generate_statistic(beat_contents, ticks_per_beat, key="C", total_beats=None,
         notes = beat_contents.get(first_beat, [])
         note_str = notes_to_fanqie_notation(notes, ticks_per_beat, key)
 
+        # 提取第一个音
+        if notes:
+            first_note = notes[0][0]
+            first_note_jianpu = midi_to_jianpu(first_note, key)
+        else:
+            first_note_jianpu = "0"
+
         lines.append(f"Q: {note_str}"+ '0 '*5)
-        lines.append(f"C: 出现{count}次")
+        lines.append(f"C: {first_note_jianpu}出现{count}次")
 
         # 每个位置单独一行
         for p in positions:
@@ -522,7 +542,6 @@ def generate_statistic(beat_contents, ticks_per_beat, key="C", total_beats=None,
 
         if group_count >= fenye_interval:
             lines.append("[fenye]")
-            print(f"{idx} reset")
             group_count = 0  # 重置计数器
 
     return lines
